@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="在浏览器中为荧光显微图快速添加箭头和圆圈标记，图片仅在本机处理。">
+  <title>FusionMark · 荧光图快速标注</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="styles.css">
+  <script src="vendor/pako.min.js" defer></script>
+  <script src="vendor/UTIF.js" defer></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" aria-label="FusionMark 荧光图快速标注">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span><strong>FusionMark</strong><small>荧光图快速标注</small></span>
+    </div>
+    <div class="privacy-badge" title="所有图片只在当前浏览器中读取和处理">
+      <span aria-hidden="true">●</span> 本地处理 · 图片不上传
+    </div>
+  </header>
+
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="图片列表">
+      <div class="sidebar-heading">
+        <div>
+          <p class="eyebrow">工作队列</p>
+          <h1>荧光图片</h1>
+        </div>
+        <span id="imageCount" class="count-badge">0</span>
+      </div>
+
+      <label class="upload-button" for="fileInput">
+        <span aria-hidden="true">＋</span> 添加图片
+      </label>
+      <input id="fileInput" type="file" accept=".tif,.tiff,.png,.jpg,.jpeg,.webp,image/tiff,image/png,image/jpeg,image/webp" multiple hidden>
+
+      <div id="dropZone" class="drop-zone">
+        可一次选择或拖入多张<br>
+        <small>支持 TIFF、PNG、JPG、WebP</small>
+      </div>
+
+      <div id="imageList" class="image-list" role="list" aria-label="已添加图片"></div>
+
+      <div class="sidebar-note">
+        <span aria-hidden="true">⌁</span>
+        标注会自动保存在此浏览器；原图不会被覆盖。
+      </div>
+    </aside>
+
+    <main class="editor">
+      <div class="toolbar" aria-label="标注工具栏">
+        <div class="tool-group" aria-label="工具">
+          <button class="tool-button" data-tool="select" title="选择与编辑 (V)" aria-label="选择与编辑">
+            <span aria-hidden="true">↖</span><small>选择</small>
+          </button>
+          <button class="tool-button active" data-tool="arrow" title="单击添加箭头，拖动自定义方向 (A)" aria-label="箭头工具">
+            <span aria-hidden="true">➜</span><small>箭头</small>
+          </button>
+          <button class="tool-button" data-tool="circle" title="单击添加圆圈，拖动自定义大小 (C)" aria-label="圆圈工具">
+            <span aria-hidden="true">○</span><small>圆圈</small>
+          </button>
+          <button class="tool-button" data-tool="pan" title="拖动画布 (H)" aria-label="移动画布">
+            <span aria-hidden="true">✋</span><small>移动</small>
+          </button>
+        </div>
+
+        <div class="toolbar-divider" aria-hidden="true"></div>
+
+        <fieldset class="color-fieldset">
+          <legend>颜色</legend>
+          <div id="colorPicker" class="color-picker">
+            <button class="swatch active" data-color="#ffffff" style="--swatch:#ffffff" aria-label="白色" title="白色"></button>
+            <button class="swatch" data-color="#ffd84d" style="--swatch:#ffd84d" aria-label="黄色" title="黄色"></button>
+            <button class="swatch" data-color="#ff5c70" style="--swatch:#ff5c70" aria-label="红色" title="红色"></button>
+            <button class="swatch" data-color="#55e6ff" style="--swatch:#55e6ff" aria-label="青色" title="青色"></button>
+            <button class="swatch" data-color="#74f28b" style="--swatch:#74f28b" aria-label="绿色" title="绿色"></button>
+          </div>
+        </fieldset>
+
+        <label class="range-field">
+          <span>大小 <output id="sizeOutput">5</output></span>
+          <input id="sizeInput" type="range" min="1" max="10" value="5">
+        </label>
+        <label class="range-field">
+          <span>线宽 <output id="strokeOutput">5</output></span>
+          <input id="strokeInput" type="range" min="1" max="10" value="5">
+        </label>
+
+        <div class="toolbar-spacer"></div>
+
+        <div class="icon-actions" aria-label="编辑操作">
+          <button id="undoButton" title="撤销 (Ctrl+Z)" aria-label="撤销" disabled>↶</button>
+          <button id="redoButton" title="重做 (Ctrl+Y)" aria-label="重做" disabled>↷</button>
+          <button id="deleteButton" title="删除选中标记 (Delete)" aria-label="删除选中标记" disabled>⌫</button>
+          <button id="clearButton" title="清空当前图片的全部标记" aria-label="清空全部标记" disabled>清空</button>
+        </div>
+      </div>
+
+      <section id="viewport" class="viewport tool-arrow" tabindex="0" aria-label="图片标注区域">
+        <div id="emptyState" class="empty-state">
+          <div class="empty-illustration" aria-hidden="true">
+            <span class="cell cell-a"></span>
+            <span class="cell cell-b"></span>
+            <span class="cell cell-c"></span>
+            <span class="demo-circle"></span>
+            <span class="demo-arrow">➜</span>
+          </div>
+          <h2>先添加一张荧光图</h2>
+          <p>选择箭头或圆圈后，直接点击融合位置即可连续标记。</p>
+          <label class="empty-upload" for="fileInput">选择图片</label>
+        </div>
+
+        <div id="stage" class="stage" hidden>
+          <canvas id="imageCanvas"></canvas>
+          <svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
+        </div>
+
+        <div id="loading" class="loading" hidden role="status">
+          <span class="spinner" aria-hidden="true"></span>
+          <strong>正在读取图片…</strong>
+          <small>大型 TIFF 可能需要几秒</small>
+        </div>
+
+        <div class="zoom-controls" aria-label="缩放控制">
+          <button id="zoomOutButton" title="缩小" aria-label="缩小">−</button>
+          <button id="fitButton" title="适应窗口 (0)" aria-label="适应窗口">适应</button>
+          <button id="zoomInButton" title="放大" aria-label="放大">＋</button>
+          <output id="zoomOutput">—</output>
+        </div>
+
+        <div id="canvasHint" class="canvas-hint">箭头：单击快速放置 · 拖动可指定方向</div>
+      </section>
+
+      <footer class="bottom-bar">
+        <div class="image-info">
+          <strong id="currentName">尚未添加图片</strong>
+          <span id="currentMeta">标注不会修改原图</span>
+        </div>
+        <div class="export-actions">
+          <button id="exportButton" class="secondary-action" disabled>下载 PNG</button>
+          <button id="exportNextButton" class="primary-action" disabled>
+            下载并下一张 <span aria-hidden="true">→</span>
+          </button>
+        </div>
+      </footer>
+    </main>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

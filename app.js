@@ -1,0 +1,900 @@
+(() => {
+  "use strict";
+
+  const $ = (selector) => document.querySelector(selector);
+  const $$ = (selector) => [...document.querySelectorAll(selector)];
+  const SVG_NS = "http://www.w3.org/2000/svg";
+  const SUPPORTED = /\.(tif|tiff|png|jpe?g|webp)$/i;
+  const STORAGE_PREFIX = "fusionmark:v1:";
+  const HISTORY_LIMIT = 60;
+
+  const el = {
+    fileInput: $("#fileInput"),
+    dropZone: $("#dropZone"),
+    imageList: $("#imageList"),
+    imageCount: $("#imageCount"),
+    viewport: $("#viewport"),
+    stage: $("#stage"),
+    canvas: $("#imageCanvas"),
+    overlay: $("#overlay"),
+    empty: $("#emptyState"),
+    loading: $("#loading"),
+    hint: $("#canvasHint"),
+    currentName: $("#currentName"),
+    currentMeta: $("#currentMeta"),
+    sizeInput: $("#sizeInput"),
+    sizeOutput: $("#sizeOutput"),
+    strokeInput: $("#strokeInput"),
+    strokeOutput: $("#strokeOutput"),
+    undo: $("#undoButton"),
+    redo: $("#redoButton"),
+    delete: $("#deleteButton"),
+    clear: $("#clearButton"),
+    export: $("#exportButton"),
+    exportNext: $("#exportNextButton"),
+    zoomIn: $("#zoomInButton"),
+    zoomOut: $("#zoomOutButton"),
+    fit: $("#fitButton"),
+    zoomOutput: $("#zoomOutput"),
+    toast: $("#toast")
+  };
+
+  const state = {
+    items: [],
+    current: -1,
+    loadedId: null,
+    loadToken: 0,
+    tool: "arrow",
+    color: "#ffffff",
+    size: 5,
+    stroke: 5,
+    scale: 1,
+    panX: 0,
+    panY: 0,
+    fitScale: 1,
+    selectedId: null,
+    interaction: null,
+    spacePan: false,
+    toastTimer: null
+  };
+
+  function currentItem() {
+    return state.items[state.current] || null;
+  }
+
+  function cloneMarkers(markers) {
+    return markers.map((marker) => ({ ...marker }));
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function storageKey(item) {
+    return STORAGE_PREFIX + encodeURIComponent(item.id);
+  }
+
+  function readSavedMarkers(item) {
+    try {
+      const value = JSON.parse(localStorage.getItem(storageKey(item)) || "[]");
+      return Array.isArray(value) ? value.filter(validMarker) : [];
+    } catch {
+      return [];
+    }
+  }
+
+  function validMarker(marker) {
+    if (!marker || !["arrow", "circle"].includes(marker.type) || typeof marker.id !== "number") return false;
+    const numbers = marker.type === "circle"
+      ? [marker.cx, marker.cy, marker.r, marker.lineWidth]
+      : [marker.x1, marker.y1, marker.x2, marker.y2, marker.lineWidth];
+    return numbers.every(Number.isFinite) && typeof marker.color === "string";
+  }
+
+  function persist(item) {
+    try {
+      localStorage.setItem(storageKey(item), JSON.stringify(item.markers));
+    } catch {
+      showToast("浏览器无法自动保存，但仍可继续标注和下载", true);
+    }
+  }
+
+  function showToast(message, error = false) {
+    clearTimeout(state.toastTimer);
+    el.toast.textContent = message;
+    el.toast.classList.toggle("error", error);
+    el.toast.classList.add("show");
+    state.toastTimer = setTimeout(() => el.toast.classList.remove("show"), 2600);
+  }
+
+  function fileId(file) {
+    return `${file.webkitRelativePath || file.name}|${file.size}|${file.lastModified}`;
+  }
+
+  function baseName(name) {
+    return name.replace(/\.[^.]+$/, "");
+  }
+
+  function addFiles(fileList) {
+    const existing = new Set(state.items.map((item) => item.id));
+    const additions = [...fileList]
+      .filter((file) => SUPPORTED.test(file.name) && !existing.has(fileId(file)))
+      .sort((a, b) => a.name.localeCompare(b.name, "zh-CN", { numeric: true }));
+
+    for (const file of additions) {
+      const item = {
+        id: fileId(file),
+        file,
+        name: file.name,
+        markers: [],
+        undo: [],
+        redo: [],
+        width: 0,
+        height: 0,
+        template: { arrowOffset: null, circleRadius: null }
+      };
+      item.markers = readSavedMarkers(item);
+      state.items.push(item);
+    }
+
+    if (!additions.length) {
+      if (fileList.length) showToast("没有发现新的受支持图片", true);
+      return;
+    }
+
+    renderImageList();
+    if (state.current === -1) openItem(0);
+    else showToast(`已加入 ${additions.length} 张图片`);
+  }
+
+  async function openItem(index) {
+    if (index < 0 || index >= state.items.length || index === state.current && state.loadedId === currentItem()?.id) return;
+
+    state.current = index;
+    state.selectedId = null;
+    state.interaction = null;
+    renderImageList();
+    updateControls();
+
+    const item = currentItem();
+    const token = ++state.loadToken;
+    el.empty.hidden = true;
+    el.loading.hidden = false;
+    el.stage.hidden = true;
+    el.currentName.textContent = item.name;
+    el.currentMeta.textContent = "正在读取图片…";
+
+    try {
+      const decodedCanvas = document.createElement("canvas");
+      const dimensions = await decodeToCanvas(item.file, decodedCanvas);
+      if (token !== state.loadToken) return;
+      item.width = dimensions.width;
+      item.height = dimensions.height;
+      state.loadedId = item.id;
+
+      el.canvas.width = item.width;
+      el.canvas.height = item.height;
+      el.canvas.getContext("2d", { alpha: false }).drawImage(decodedCanvas, 0, 0);
+
+      el.stage.style.width = `${item.width}px`;
+      el.stage.style.height = `${item.height}px`;
+      el.overlay.setAttribute("viewBox", `0 0 ${item.width} ${item.height}`);
+      el.overlay.setAttribute("width", item.width);
+      el.overlay.setAttribute("height", item.height);
+      el.loading.hidden = true;
+      el.stage.hidden = false;
+      el.currentMeta.textContent = `${item.width} × ${item.height} px · ${item.markers.length} 个标记`;
+      requestAnimationFrame(fitToView);
+      renderMarkers();
+      updateControls();
+    } catch (error) {
+      if (token !== state.loadToken) return;
+      state.loadedId = null;
+      el.loading.hidden = true;
+      el.stage.hidden = true;
+      el.empty.hidden = false;
+      el.currentMeta.textContent = "读取失败";
+      showToast(error?.message || "无法读取这张图片", true);
+      console.error(error);
+    }
+  }
+
+  async function decodeToCanvas(file, canvas) {
+    const context = canvas.getContext("2d", { alpha: false });
+    if (/\.tiff?$/i.test(file.name)) {
+      if (!window.UTIF) throw new Error("TIFF 解码器未加载，请刷新页面重试");
+      const buffer = await file.arrayBuffer();
+      const pages = window.UTIF.decode(buffer);
+      if (!pages.length) throw new Error("这个 TIFF 文件中没有可读取的图像");
+      window.UTIF.decodeImage(buffer, pages[0]);
+      const rgba = window.UTIF.toRGBA8(pages[0]);
+      const width = pages[0].width;
+      const height = pages[0].height;
+      if (!width || !height || width * height > 120_000_000) throw new Error("图片尺寸过大，浏览器无法安全打开");
+      canvas.width = width;
+      canvas.height = height;
+      const pixels = new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+      context.putImageData(new ImageData(pixels, width, height), 0, 0);
+      return { width, height };
+    }
+
+    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    if (bitmap.width * bitmap.height > 120_000_000) {
+      bitmap.close();
+      throw new Error("图片尺寸过大，浏览器无法安全打开");
+    }
+    canvas.width = bitmap.width;
+    canvas.height = bitmap.height;
+    context.drawImage(bitmap, 0, 0);
+    const dimensions = { width: bitmap.width, height: bitmap.height };
+    bitmap.close();
+    return dimensions;
+  }
+
+  function renderImageList() {
+    el.imageCount.textContent = state.items.length;
+    el.imageList.replaceChildren();
+    state.items.forEach((item, index) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `image-item${index === state.current ? " active" : ""}`;
+      button.setAttribute("role", "listitem");
+      button.setAttribute("aria-label", `打开 ${item.name}，${item.markers.length} 个标记`);
+      button.innerHTML = `
+        <span class="image-index">${String(index + 1).padStart(2, "0")}</span>
+        <span class="image-copy"><strong></strong><small>${formatBytes(item.file.size)}</small></span>
+        <span class="marker-count" title="标记数量">${item.markers.length}</span>`;
+      button.querySelector("strong").textContent = item.name;
+      button.addEventListener("click", () => openItem(index));
+      el.imageList.append(button);
+    });
+  }
+
+  function formatBytes(bytes) {
+    if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  }
+
+  function fitToView() {
+    const item = currentItem();
+    if (!item?.width || state.loadedId !== item.id) return;
+    const bounds = el.viewport.getBoundingClientRect();
+    state.fitScale = Math.min(1, (bounds.width - 52) / item.width, (bounds.height - 52) / item.height);
+    state.scale = Math.max(0.02, state.fitScale);
+    state.panX = (bounds.width - item.width * state.scale) / 2;
+    state.panY = (bounds.height - item.height * state.scale) / 2;
+    applyTransform();
+  }
+
+  function applyTransform() {
+    el.stage.style.transform = `translate(${state.panX}px, ${state.panY}px) scale(${state.scale})`;
+    el.zoomOutput.value = `${Math.round(state.scale * 100)}%`;
+    el.zoomOutput.textContent = `${Math.round(state.scale * 100)}%`;
+    renderMarkers();
+  }
+
+  function zoomAt(factor, clientX, clientY) {
+    const item = currentItem();
+    if (!item?.width || state.loadedId !== item.id) return;
+    const rect = el.viewport.getBoundingClientRect();
+    const x = (clientX ?? rect.left + rect.width / 2) - rect.left;
+    const y = (clientY ?? rect.top + rect.height / 2) - rect.top;
+    const imageX = (x - state.panX) / state.scale;
+    const imageY = (y - state.panY) / state.scale;
+    const next = clamp(state.scale * factor, Math.max(0.01, state.fitScale * 0.25), 8);
+    state.panX = x - imageX * next;
+    state.panY = y - imageY * next;
+    state.scale = next;
+    applyTransform();
+  }
+
+  function clientToImage(clientX, clientY) {
+    const rect = el.viewport.getBoundingClientRect();
+    return {
+      x: (clientX - rect.left - state.panX) / state.scale,
+      y: (clientY - rect.top - state.panY) / state.scale
+    };
+  }
+
+  function insideImage(point, item = currentItem()) {
+    return item && point.x >= 0 && point.y >= 0 && point.x <= item.width && point.y <= item.height;
+  }
+
+  function setTool(tool) {
+    state.tool = tool;
+    if (tool !== "select") state.selectedId = null;
+    $$(".tool-button").forEach((button) => button.classList.toggle("active", button.dataset.tool === tool));
+    el.viewport.className = `viewport tool-${tool}${state.spacePan ? " space-pan" : ""}`;
+    const hints = {
+      arrow: "箭头：单击快速放置 · 拖动可指定方向",
+      circle: "圆圈：单击快速放置 · 拖动可指定大小",
+      select: "选择：拖动标记移动 · 拖动控制点调整",
+      pan: "移动：拖动画布 · 滚轮缩放"
+    };
+    el.hint.textContent = hints[tool];
+    renderMarkers();
+    updateControls();
+  }
+
+  function defaultRadius(item) {
+    return Math.min(item.width, item.height) * (0.012 + state.size * 0.0032);
+  }
+
+  function defaultArrowOffset(item) {
+    const length = defaultRadius(item) * 2.7;
+    return { x: -length / Math.SQRT2, y: -length / Math.SQRT2 };
+  }
+
+  function currentLineWidth(item) {
+    return Math.min(item.width, item.height) * (0.0011 + state.stroke * 0.00043);
+  }
+
+  function nextMarkerId(item) {
+    return Math.max(0, ...item.markers.map((marker) => marker.id)) + 1;
+  }
+
+  function createMarker(type, point, item) {
+    const common = { id: nextMarkerId(item), type, color: state.color, lineWidth: currentLineWidth(item) };
+    if (type === "circle") {
+      return { ...common, cx: point.x, cy: point.y, r: item.template.circleRadius || defaultRadius(item) };
+    }
+    const offset = item.template.arrowOffset || defaultArrowOffset(item);
+    let x1 = point.x + offset.x;
+    let y1 = point.y + offset.y;
+    if (x1 < 0 || x1 > item.width) x1 = point.x - offset.x;
+    if (y1 < 0 || y1 > item.height) y1 = point.y - offset.y;
+    return {
+      ...common,
+      x1: clamp(x1, 0, item.width),
+      y1: clamp(y1, 0, item.height),
+      x2: point.x,
+      y2: point.y
+    };
+  }
+
+  function arrowGeometry(marker) {
+    const dx = marker.x2 - marker.x1;
+    const dy = marker.y2 - marker.y1;
+    const length = Math.max(0.001, Math.hypot(dx, dy));
+    const ux = dx / length;
+    const uy = dy / length;
+    const headLength = Math.min(length * 0.44, Math.max(marker.lineWidth * 5, 12));
+    const headWidth = Math.max(marker.lineWidth * 3.2, headLength * 0.68);
+    const baseX = marker.x2 - ux * headLength;
+    const baseY = marker.y2 - uy * headLength;
+    const px = -uy * headWidth / 2;
+    const py = ux * headWidth / 2;
+    return {
+      baseX,
+      baseY,
+      leftX: baseX + px,
+      leftY: baseY + py,
+      rightX: baseX - px,
+      rightY: baseY - py
+    };
+  }
+
+  function svgElement(name, attributes = {}) {
+    const node = document.createElementNS(SVG_NS, name);
+    Object.entries(attributes).forEach(([key, value]) => node.setAttribute(key, value));
+    return node;
+  }
+
+  function renderMarkers() {
+    const item = currentItem();
+    el.overlay.replaceChildren();
+    if (!item?.width || state.loadedId !== item.id) return;
+
+    for (const marker of item.markers) {
+      const outline = Math.max(2, marker.lineWidth * 0.5);
+      if (marker.type === "circle") {
+        el.overlay.append(
+          svgElement("circle", { cx: marker.cx, cy: marker.cy, r: marker.r, fill: "none", stroke: "#0a0d0e", "stroke-width": marker.lineWidth + outline * 2 }),
+          svgElement("circle", { cx: marker.cx, cy: marker.cy, r: marker.r, fill: "none", stroke: marker.color, "stroke-width": marker.lineWidth })
+        );
+      } else {
+        const geometry = arrowGeometry(marker);
+        el.overlay.append(
+          svgElement("line", { x1: marker.x1, y1: marker.y1, x2: geometry.baseX, y2: geometry.baseY, stroke: "#0a0d0e", "stroke-width": marker.lineWidth + outline * 2, "stroke-linecap": "round" }),
+          svgElement("line", { x1: marker.x1, y1: marker.y1, x2: geometry.baseX, y2: geometry.baseY, stroke: marker.color, "stroke-width": marker.lineWidth, "stroke-linecap": "round" }),
+          svgElement("polygon", {
+            points: `${marker.x2},${marker.y2} ${geometry.leftX},${geometry.leftY} ${geometry.rightX},${geometry.rightY}`,
+            fill: marker.color,
+            stroke: "#0a0d0e",
+            "stroke-width": outline * 1.4,
+            "stroke-linejoin": "round"
+          })
+        );
+      }
+    }
+
+    if (state.tool === "select" && state.selectedId !== null) renderSelection(item.markers.find((marker) => marker.id === state.selectedId));
+  }
+
+  function renderSelection(marker) {
+    if (!marker) return;
+    const unit = 1 / state.scale;
+    const handleRadius = 6.5 * unit;
+    const attrs = { fill: "#0d1717", stroke: "#55e6ff", "stroke-width": 2 * unit };
+
+    if (marker.type === "circle") {
+      el.overlay.append(
+        svgElement("circle", {
+          cx: marker.cx,
+          cy: marker.cy,
+          r: marker.r + 5 * unit,
+          fill: "none",
+          stroke: "#55e6ff",
+          "stroke-width": 1.5 * unit,
+          "stroke-dasharray": `${6 * unit} ${5 * unit}`
+        }),
+        svgElement("circle", { cx: marker.cx + marker.r, cy: marker.cy, r: handleRadius, ...attrs })
+      );
+    } else {
+      el.overlay.append(
+        svgElement("line", {
+          x1: marker.x1,
+          y1: marker.y1,
+          x2: marker.x2,
+          y2: marker.y2,
+          stroke: "#55e6ff",
+          "stroke-width": 1.5 * unit,
+          "stroke-dasharray": `${6 * unit} ${5 * unit}`
+        }),
+        svgElement("circle", { cx: marker.x1, cy: marker.y1, r: handleRadius, ...attrs }),
+        svgElement("circle", { cx: marker.x2, cy: marker.y2, r: handleRadius, ...attrs })
+      );
+    }
+  }
+
+  function distanceToSegment(point, a, b) {
+    const dx = b.x - a.x;
+    const dy = b.y - a.y;
+    const lengthSquared = dx * dx + dy * dy;
+    if (!lengthSquared) return Math.hypot(point.x - a.x, point.y - a.y);
+    const t = clamp(((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared, 0, 1);
+    return Math.hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy));
+  }
+
+  function hitHandle(point, marker) {
+    if (!marker) return null;
+    const tolerance = 12 / state.scale;
+    if (marker.type === "circle") {
+      return Math.hypot(point.x - (marker.cx + marker.r), point.y - marker.cy) <= tolerance ? "radius" : null;
+    }
+    if (Math.hypot(point.x - marker.x1, point.y - marker.y1) <= tolerance) return "tail";
+    if (Math.hypot(point.x - marker.x2, point.y - marker.y2) <= tolerance) return "tip";
+    return null;
+  }
+
+  function hitMarker(point, item) {
+    const tolerance = 11 / state.scale;
+    for (let index = item.markers.length - 1; index >= 0; index--) {
+      const marker = item.markers[index];
+      if (marker.type === "circle") {
+        if (Math.hypot(point.x - marker.cx, point.y - marker.cy) <= marker.r + tolerance) return marker;
+      } else if (distanceToSegment(point, { x: marker.x1, y: marker.y1 }, { x: marker.x2, y: marker.y2 }) <= tolerance + marker.lineWidth / 2) {
+        return marker;
+      }
+    }
+    return null;
+  }
+
+  function pointerDown(event) {
+    const item = currentItem();
+    if (!item?.width || state.loadedId !== item.id || event.button > 1) return;
+    el.viewport.focus({ preventScroll: true });
+
+    if (event.button === 1 || state.spacePan || state.tool === "pan") {
+      state.interaction = { mode: "pan", clientX: event.clientX, clientY: event.clientY, panX: state.panX, panY: state.panY };
+      el.viewport.classList.add("panning");
+      el.viewport.setPointerCapture(event.pointerId);
+      event.preventDefault();
+      return;
+    }
+
+    const point = clientToImage(event.clientX, event.clientY);
+    if (!insideImage(point, item)) return;
+
+    if (state.tool === "arrow" || state.tool === "circle") {
+      const before = cloneMarkers(item.markers);
+      const marker = createMarker(state.tool, point, item);
+      item.markers.push(marker);
+      state.selectedId = marker.id;
+      state.interaction = { mode: "create", markerId: marker.id, type: marker.type, start: point, startClientX: event.clientX, startClientY: event.clientY, before, moved: false };
+      el.viewport.setPointerCapture(event.pointerId);
+      renderMarkers();
+      updateControls();
+      event.preventDefault();
+      return;
+    }
+
+    if (state.tool === "select") {
+      const selected = item.markers.find((marker) => marker.id === state.selectedId);
+      const handle = hitHandle(point, selected);
+      const marker = selected && handle ? selected : hitMarker(point, item);
+      if (!marker) {
+        state.selectedId = null;
+        renderMarkers();
+        updateControls();
+        return;
+      }
+      state.selectedId = marker.id;
+      state.interaction = {
+        mode: handle || "move",
+        markerId: marker.id,
+        start: point,
+        original: { ...marker },
+        before: cloneMarkers(item.markers),
+        changed: false
+      };
+      el.viewport.setPointerCapture(event.pointerId);
+      renderMarkers();
+      updateControls();
+      event.preventDefault();
+    }
+  }
+
+  function pointerMove(event) {
+    const interaction = state.interaction;
+    const item = currentItem();
+    if (!interaction || !item) return;
+
+    if (interaction.mode === "pan") {
+      state.panX = interaction.panX + event.clientX - interaction.clientX;
+      state.panY = interaction.panY + event.clientY - interaction.clientY;
+      applyTransform();
+      return;
+    }
+
+    const marker = item.markers.find((candidate) => candidate.id === interaction.markerId);
+    if (!marker) return;
+    const point = clientToImage(event.clientX, event.clientY);
+
+    if (interaction.mode === "create") {
+      const moved = Math.hypot(event.clientX - interaction.startClientX, event.clientY - interaction.startClientY) > 7;
+      if (!moved) return;
+      interaction.moved = true;
+      if (marker.type === "circle") {
+        marker.r = clamp(Math.hypot(point.x - marker.cx, point.y - marker.cy), 4 / state.scale, Math.hypot(item.width, item.height));
+      } else {
+        marker.x1 = clamp(point.x, 0, item.width);
+        marker.y1 = clamp(point.y, 0, item.height);
+      }
+    } else if (interaction.mode === "move") {
+      const dx = point.x - interaction.start.x;
+      const dy = point.y - interaction.start.y;
+      if (marker.type === "circle") {
+        marker.cx = clamp(interaction.original.cx + dx, 0, item.width);
+        marker.cy = clamp(interaction.original.cy + dy, 0, item.height);
+      } else {
+        const limitedX = clamp(dx, -Math.min(interaction.original.x1, interaction.original.x2), item.width - Math.max(interaction.original.x1, interaction.original.x2));
+        const limitedY = clamp(dy, -Math.min(interaction.original.y1, interaction.original.y2), item.height - Math.max(interaction.original.y1, interaction.original.y2));
+        marker.x1 = interaction.original.x1 + limitedX;
+        marker.y1 = interaction.original.y1 + limitedY;
+        marker.x2 = interaction.original.x2 + limitedX;
+        marker.y2 = interaction.original.y2 + limitedY;
+      }
+      interaction.changed = Math.abs(dx) + Math.abs(dy) > 0.01;
+    } else if (interaction.mode === "radius") {
+      marker.r = clamp(Math.hypot(point.x - marker.cx, point.y - marker.cy), 4 / state.scale, Math.hypot(item.width, item.height));
+      interaction.changed = true;
+    } else if (interaction.mode === "tail") {
+      marker.x1 = clamp(point.x, 0, item.width);
+      marker.y1 = clamp(point.y, 0, item.height);
+      interaction.changed = true;
+    } else if (interaction.mode === "tip") {
+      marker.x2 = clamp(point.x, 0, item.width);
+      marker.y2 = clamp(point.y, 0, item.height);
+      interaction.changed = true;
+    }
+    renderMarkers();
+  }
+
+  function pointerUp(event) {
+    const interaction = state.interaction;
+    const item = currentItem();
+    if (!interaction || !item) return;
+    if (el.viewport.hasPointerCapture(event.pointerId)) el.viewport.releasePointerCapture(event.pointerId);
+    el.viewport.classList.remove("panning");
+
+    if (interaction.mode === "create") {
+      pushUndo(item, interaction.before);
+      const marker = item.markers.find((candidate) => candidate.id === interaction.markerId);
+      rememberTemplate(item, marker);
+      persist(item);
+      showToast(marker?.type === "arrow" ? "已添加箭头" : "已添加圆圈");
+    } else if (interaction.mode !== "pan" && interaction.changed) {
+      pushUndo(item, interaction.before);
+      rememberTemplate(item, item.markers.find((marker) => marker.id === interaction.markerId));
+      persist(item);
+    }
+
+    state.interaction = null;
+    renderImageList();
+    renderMarkers();
+    updateControls();
+  }
+
+  function pointerCancel(event) {
+    const item = currentItem();
+    if (!state.interaction || !item) return;
+    if (state.interaction.before) item.markers = state.interaction.before;
+    if (el.viewport.hasPointerCapture(event.pointerId)) el.viewport.releasePointerCapture(event.pointerId);
+    el.viewport.classList.remove("panning");
+    state.interaction = null;
+    renderMarkers();
+    updateControls();
+  }
+
+  function rememberTemplate(item, marker) {
+    if (!marker) return;
+    if (marker.type === "circle") item.template.circleRadius = marker.r;
+    else item.template.arrowOffset = { x: marker.x1 - marker.x2, y: marker.y1 - marker.y2 };
+  }
+
+  function pushUndo(item, snapshot) {
+    item.undo.push(snapshot);
+    if (item.undo.length > HISTORY_LIMIT) item.undo.shift();
+    item.redo = [];
+  }
+
+  function undo() {
+    const item = currentItem();
+    if (!item?.undo.length) return;
+    item.redo.push(cloneMarkers(item.markers));
+    item.markers = item.undo.pop();
+    state.selectedId = null;
+    persist(item);
+    refreshAfterEdit();
+  }
+
+  function redo() {
+    const item = currentItem();
+    if (!item?.redo.length) return;
+    item.undo.push(cloneMarkers(item.markers));
+    item.markers = item.redo.pop();
+    state.selectedId = null;
+    persist(item);
+    refreshAfterEdit();
+  }
+
+  function deleteSelected() {
+    const item = currentItem();
+    if (!item || state.selectedId === null) return;
+    const index = item.markers.findIndex((marker) => marker.id === state.selectedId);
+    if (index < 0) return;
+    pushUndo(item, cloneMarkers(item.markers));
+    item.markers.splice(index, 1);
+    state.selectedId = null;
+    persist(item);
+    refreshAfterEdit();
+    showToast("已删除标记");
+  }
+
+  function clearMarkers() {
+    const item = currentItem();
+    if (!item?.markers.length || !confirm(`清空“${item.name}”上的全部 ${item.markers.length} 个标记？`)) return;
+    pushUndo(item, cloneMarkers(item.markers));
+    item.markers = [];
+    state.selectedId = null;
+    persist(item);
+    refreshAfterEdit();
+    showToast("已清空当前图片的标记");
+  }
+
+  function refreshAfterEdit() {
+    renderImageList();
+    renderMarkers();
+    updateControls();
+  }
+
+  function updateSelectedStyle(change) {
+    const item = currentItem();
+    if (state.tool !== "select" || state.selectedId === null || !item) return;
+    const marker = item.markers.find((candidate) => candidate.id === state.selectedId);
+    if (!marker) return;
+    const before = cloneMarkers(item.markers);
+    change(marker, item);
+    pushUndo(item, before);
+    rememberTemplate(item, marker);
+    persist(item);
+    refreshAfterEdit();
+  }
+
+  function updateControls() {
+    const item = currentItem();
+    const ready = Boolean(item?.width && state.loadedId === item.id);
+    el.undo.disabled = !item?.undo.length;
+    el.redo.disabled = !item?.redo.length;
+    el.delete.disabled = !(ready && state.tool === "select" && state.selectedId !== null);
+    el.clear.disabled = !item?.markers.length;
+    el.export.disabled = !ready;
+    el.exportNext.disabled = !ready;
+    if (ready) el.currentMeta.textContent = `${item.width} × ${item.height} px · ${item.markers.length} 个标记`;
+  }
+
+  function drawMarker(context, marker) {
+    const outline = Math.max(2, marker.lineWidth * 0.5);
+    context.save();
+    context.lineCap = "round";
+    context.lineJoin = "round";
+    if (marker.type === "circle") {
+      context.beginPath();
+      context.arc(marker.cx, marker.cy, marker.r, 0, Math.PI * 2);
+      context.strokeStyle = "#0a0d0e";
+      context.lineWidth = marker.lineWidth + outline * 2;
+      context.stroke();
+      context.strokeStyle = marker.color;
+      context.lineWidth = marker.lineWidth;
+      context.stroke();
+    } else {
+      const geometry = arrowGeometry(marker);
+      context.beginPath();
+      context.moveTo(marker.x1, marker.y1);
+      context.lineTo(geometry.baseX, geometry.baseY);
+      context.strokeStyle = "#0a0d0e";
+      context.lineWidth = marker.lineWidth + outline * 2;
+      context.stroke();
+      context.strokeStyle = marker.color;
+      context.lineWidth = marker.lineWidth;
+      context.stroke();
+
+      context.beginPath();
+      context.moveTo(marker.x2, marker.y2);
+      context.lineTo(geometry.leftX, geometry.leftY);
+      context.lineTo(geometry.rightX, geometry.rightY);
+      context.closePath();
+      context.fillStyle = marker.color;
+      context.strokeStyle = "#0a0d0e";
+      context.lineWidth = outline * 1.4;
+      context.stroke();
+      context.fill();
+    }
+    context.restore();
+  }
+
+  async function exportPng(advance = false) {
+    const item = currentItem();
+    if (!item?.width || state.loadedId !== item.id) return;
+    el.export.disabled = true;
+    el.exportNext.disabled = true;
+
+    try {
+      const output = document.createElement("canvas");
+      output.width = item.width;
+      output.height = item.height;
+      const context = output.getContext("2d", { alpha: false });
+      context.drawImage(el.canvas, 0, 0);
+      item.markers.forEach((marker) => drawMarker(context, marker));
+      const blob = await new Promise((resolve, reject) => output.toBlob((value) => value ? resolve(value) : reject(new Error("PNG 生成失败")), "image/png"));
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${baseName(item.name)}_融合标注.png`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
+      showToast(`已下载 ${link.download}`);
+      if (advance && state.current < state.items.length - 1) await openItem(state.current + 1);
+    } catch (error) {
+      showToast(error?.message || "下载失败", true);
+    } finally {
+      updateControls();
+    }
+  }
+
+  function handleKeyDown(event) {
+    const tag = event.target.tagName;
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(tag)) return;
+    const modifier = event.ctrlKey || event.metaKey;
+    if (modifier && event.key.toLowerCase() === "z") {
+      event.preventDefault();
+      event.shiftKey ? redo() : undo();
+      return;
+    }
+    if (modifier && event.key.toLowerCase() === "y") {
+      event.preventDefault();
+      redo();
+      return;
+    }
+    if (event.code === "Space" && !event.repeat) {
+      event.preventDefault();
+      state.spacePan = true;
+      el.viewport.classList.add("space-pan");
+      return;
+    }
+    const key = event.key.toLowerCase();
+    if ({ v: "select", a: "arrow", c: "circle", h: "pan" }[key]) setTool({ v: "select", a: "arrow", c: "circle", h: "pan" }[key]);
+    else if (key === "delete" || key === "backspace") { event.preventDefault(); deleteSelected(); }
+    else if (key === "escape") { state.selectedId = null; renderMarkers(); updateControls(); }
+    else if (key === "0") fitToView();
+    else if (key === "+" || key === "=") zoomAt(1.2);
+    else if (key === "-") zoomAt(1 / 1.2);
+    else if (key === "e" && currentItem()) exportPng(false);
+  }
+
+  function runSelfCheck() {
+    if (!new URLSearchParams(location.search).has("selftest")) return;
+    const geometry = arrowGeometry({ x1: 0, y1: 0, x2: 100, y2: 0, lineWidth: 5 });
+    const ok = Math.abs(distanceToSegment({ x: 50, y: 10 }, { x: 0, y: 0 }, { x: 100, y: 0 }) - 10) < 0.001
+      && geometry.baseX < 100 && geometry.leftY !== geometry.rightY;
+    document.documentElement.dataset.selftest = ok ? "passed" : "failed";
+    if (!ok) throw new Error("FusionMark geometry self-check failed");
+  }
+
+  el.fileInput.addEventListener("change", (event) => {
+    addFiles(event.target.files);
+    event.target.value = "";
+  });
+
+  [el.dropZone, el.viewport].forEach((target) => {
+    target.addEventListener("dragover", (event) => { event.preventDefault(); el.dropZone.classList.add("dragging"); });
+    target.addEventListener("dragleave", () => el.dropZone.classList.remove("dragging"));
+    target.addEventListener("drop", (event) => {
+      event.preventDefault();
+      el.dropZone.classList.remove("dragging");
+      addFiles(event.dataTransfer.files);
+    });
+  });
+
+  $$(".tool-button").forEach((button) => button.addEventListener("click", () => setTool(button.dataset.tool)));
+  $$(".swatch").forEach((button) => button.addEventListener("click", () => {
+    state.color = button.dataset.color;
+    $$(".swatch").forEach((swatch) => swatch.classList.toggle("active", swatch === button));
+    updateSelectedStyle((marker) => { marker.color = state.color; });
+  }));
+
+  el.sizeInput.addEventListener("input", () => { el.sizeOutput.value = el.sizeInput.value; el.sizeOutput.textContent = el.sizeInput.value; });
+  el.sizeInput.addEventListener("change", () => {
+    state.size = Number(el.sizeInput.value);
+    const item = currentItem();
+    if (item) item.template = { arrowOffset: null, circleRadius: null };
+    updateSelectedStyle((marker, selectedItem) => {
+      if (marker.type === "circle") marker.r = defaultRadius(selectedItem);
+      else {
+        const length = defaultRadius(selectedItem) * 2.7;
+        const currentLength = Math.max(0.001, Math.hypot(marker.x2 - marker.x1, marker.y2 - marker.y1));
+        marker.x1 = clamp(marker.x2 - (marker.x2 - marker.x1) / currentLength * length, 0, selectedItem.width);
+        marker.y1 = clamp(marker.y2 - (marker.y2 - marker.y1) / currentLength * length, 0, selectedItem.height);
+      }
+    });
+  });
+
+  el.strokeInput.addEventListener("input", () => { el.strokeOutput.value = el.strokeInput.value; el.strokeOutput.textContent = el.strokeInput.value; });
+  el.strokeInput.addEventListener("change", () => {
+    state.stroke = Number(el.strokeInput.value);
+    updateSelectedStyle((marker, item) => { marker.lineWidth = currentLineWidth(item); });
+  });
+
+  el.viewport.addEventListener("pointerdown", pointerDown);
+  el.viewport.addEventListener("pointermove", pointerMove);
+  el.viewport.addEventListener("pointerup", pointerUp);
+  el.viewport.addEventListener("pointercancel", pointerCancel);
+  el.viewport.addEventListener("wheel", (event) => {
+    if (state.loadedId) {
+      event.preventDefault();
+      zoomAt(Math.exp(-event.deltaY * 0.0015), event.clientX, event.clientY);
+    }
+  }, { passive: false });
+
+  el.undo.addEventListener("click", undo);
+  el.redo.addEventListener("click", redo);
+  el.delete.addEventListener("click", deleteSelected);
+  el.clear.addEventListener("click", clearMarkers);
+  el.export.addEventListener("click", () => exportPng(false));
+  el.exportNext.addEventListener("click", () => exportPng(true));
+  el.zoomIn.addEventListener("click", () => zoomAt(1.2));
+  el.zoomOut.addEventListener("click", () => zoomAt(1 / 1.2));
+  el.fit.addEventListener("click", fitToView);
+  window.addEventListener("keydown", handleKeyDown);
+  window.addEventListener("keyup", (event) => {
+    if (event.code === "Space") {
+      state.spacePan = false;
+      el.viewport.classList.remove("space-pan");
+    }
+  });
+  window.addEventListener("resize", () => { if (state.loadedId) fitToView(); });
+
+  runSelfCheck();
+  updateControls();
+})();
