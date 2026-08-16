@@ -32,14 +32,19 @@
         <span id="imageCount" class="count-badge">0</span>
       </div>
 
-      <label class="upload-button" for="fileInput">
-        <span aria-hidden="true">＋</span> 添加图片
-      </label>
+      <div class="source-actions">
+        <label class="upload-button" for="fileInput">
+          <span aria-hidden="true">＋</span> 选择文件
+        </label>
+        <button id="pasteButton" class="paste-button" type="button" title="从 PowerPoint 复制后粘贴 (Ctrl/⌘+V)">
+          <span aria-hidden="true">▣</span> 粘贴图片
+        </button>
+      </div>
       <input id="fileInput" type="file" accept=".tif,.tiff,.png,.jpg,.jpeg,.webp,image/tiff,image/png,image/jpeg,image/webp" multiple hidden>
 
       <div id="dropZone" class="drop-zone">
-        可一次选择或拖入多张<br>
-        <small>支持 TIFF、PNG、JPG、WebP</small>
+        可拖入多张，或从 PPT 复制后按 Ctrl/⌘+V<br>
+        <small>支持 TIFF、PNG、JPG、WebP 与剪贴板图片</small>
       </div>
 
       <div id="imageList" class="image-list" role="list" aria-label="已添加图片"></div>
@@ -56,7 +61,7 @@
           <button class="tool-button" data-tool="select" title="选择与编辑 (V)" aria-label="选择与编辑">
             <span aria-hidden="true">↖</span><small>选择</small>
           </button>
-          <button class="tool-button active" data-tool="arrow" title="单击添加箭头，拖动自定义方向 (A)" aria-label="箭头工具">
+          <button class="tool-button active" data-tool="arrow" title="单击添加箭头，沿箭头方向拖动 (A)" aria-label="箭头工具">
             <span aria-hidden="true">➜</span><small>箭头</small>
           </button>
           <button class="tool-button" data-tool="circle" title="单击添加圆圈，拖动自定义大小 (C)" aria-label="圆圈工具">
@@ -109,7 +114,7 @@
             <span class="demo-arrow">➜</span>
           </div>
           <h2>先添加一张荧光图</h2>
-          <p>选择箭头或圆圈后，直接点击融合位置即可连续标记。</p>
+          <p>选择文件，或从 PowerPoint 复制图片后按 Ctrl/⌘+V；再点击融合位置连续标记。</p>
           <label class="empty-upload" for="fileInput">选择图片</label>
         </div>
 
@@ -131,7 +136,7 @@
           <output id="zoomOutput">—</output>
         </div>
 
-        <div id="canvasHint" class="canvas-hint">箭头：单击快速放置 · 拖动可指定方向</div>
+        <div id="canvasHint" class="canvas-hint">箭头：单击快速放置 · 沿箭头方向拖动</div>
       </section>
 
       <footer class="bottom-bar">

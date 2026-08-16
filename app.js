@@ -10,6 +10,7 @@
 
   const el = {
     fileInput: $("#fileInput"),
+    pasteButton: $("#pasteButton"),
     dropZone: $("#dropZone"),
     imageList: $("#imageList"),
     imageCount: $("#imageCount"),
@@ -113,6 +114,45 @@
 
   function baseName(name) {
     return name.replace(/\.[^.]+$/, "");
+  }
+
+  function clipboardFile(blob, index = 0) {
+    const now = new Date();
+    const stamp = [now.getFullYear(), now.getMonth() + 1, now.getDate(), now.getHours(), now.getMinutes(), now.getSeconds()]
+      .map((part, position) => position ? String(part).padStart(2, "0") : part)
+      .join("");
+    const suffix = index ? `_${index + 1}` : "";
+    return new File([blob], `PPT粘贴_${stamp}${suffix}.png`, {
+      type: blob.type || "image/png",
+      lastModified: Date.now() + index
+    });
+  }
+
+  function addClipboardImages(blobs) {
+    if (!blobs.length) {
+      showToast("剪贴板中没有图片，请先在 PowerPoint 中复制图片", true);
+      return;
+    }
+    addFiles(blobs.map(clipboardFile));
+    showToast(`已从剪贴板粘贴 ${blobs.length} 张图片`);
+  }
+
+  async function pasteFromClipboard() {
+    if (!navigator.clipboard?.read) {
+      showToast("请在 PowerPoint 复制图片后，直接按 Ctrl/⌘+V", true);
+      return;
+    }
+    try {
+      const clipboardItems = await navigator.clipboard.read();
+      const blobs = [];
+      for (const item of clipboardItems) {
+        const imageType = item.types.find((type) => type.startsWith("image/"));
+        if (imageType) blobs.push(await item.getType(imageType));
+      }
+      addClipboardImages(blobs);
+    } catch {
+      showToast("浏览器未允许读取剪贴板，请直接按 Ctrl/⌘+V", true);
+    }
   }
 
   function addFiles(fileList) {
@@ -306,7 +346,7 @@
     $$(".tool-button").forEach((button) => button.classList.toggle("active", button.dataset.tool === tool));
     el.viewport.className = `viewport tool-${tool}${state.spacePan ? " space-pan" : ""}`;
     const hints = {
-      arrow: "箭头：单击快速放置 · 拖动可指定方向",
+      arrow: "箭头：单击快速放置 · 沿箭头方向拖动",
       circle: "圆圈：单击快速放置 · 拖动可指定大小",
       select: "选择：拖动标记移动 · 拖动控制点调整",
       pan: "移动：拖动画布 · 滚轮缩放"
@@ -558,8 +598,10 @@
       if (marker.type === "circle") {
         marker.r = clamp(Math.hypot(point.x - marker.cx, point.y - marker.cy), 4 / state.scale, Math.hypot(item.width, item.height));
       } else {
-        marker.x1 = clamp(point.x, 0, item.width);
-        marker.y1 = clamp(point.y, 0, item.height);
+        marker.x1 = interaction.start.x;
+        marker.y1 = interaction.start.y;
+        marker.x2 = clamp(point.x, 0, item.width);
+        marker.y2 = clamp(point.y, 0, item.height);
       }
     } else if (interaction.mode === "move") {
       const dx = point.x - interaction.start.x;
@@ -797,6 +839,7 @@
       redo();
       return;
     }
+    if (modifier) return;
     if (event.code === "Space" && !event.repeat) {
       event.preventDefault();
       state.spacePan = true;
@@ -825,6 +868,17 @@
   el.fileInput.addEventListener("change", (event) => {
     addFiles(event.target.files);
     event.target.value = "";
+  });
+
+  el.pasteButton.addEventListener("click", pasteFromClipboard);
+  window.addEventListener("paste", (event) => {
+    const blobs = [...(event.clipboardData?.items || [])]
+      .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (!blobs.length) return;
+    event.preventDefault();
+    addClipboardImages(blobs);
   });
 
   [el.dropZone, el.viewport].forEach((target) => {
