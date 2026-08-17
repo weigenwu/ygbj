@@ -94,6 +94,16 @@
           <input id="strokeInput" type="range" min="1" max="10" value="5">
         </label>
 
+        <label class="split-field">
+          <span>分屏对照</span>
+          <select id="splitCountInput" aria-label="选择分屏数量">
+            <option value="1">1 屏</option>
+            <option value="2">2 屏</option>
+            <option value="3">3 屏</option>
+            <option value="4">4 屏</option>
+          </select>
+        </label>
+
         <div class="toolbar-spacer"></div>
 
         <div class="icon-actions" aria-label="编辑操作">
@@ -104,39 +114,43 @@
         </div>
       </div>
 
-      <section id="viewport" class="viewport tool-arrow" tabindex="0" aria-label="图片标注区域">
-        <div id="emptyState" class="empty-state">
-          <div class="empty-illustration" aria-hidden="true">
-            <span class="cell cell-a"></span>
-            <span class="cell cell-b"></span>
-            <span class="cell cell-c"></span>
-            <span class="demo-circle"></span>
-            <span class="demo-arrow">➜</span>
+      <section id="splitViewport" class="split-viewport split-1" aria-label="分屏图片对照区域">
+        <section id="viewport" class="viewport tool-arrow" tabindex="0" aria-label="主编辑屏">
+          <div id="primaryBadge" class="primary-badge" hidden>屏 1 · 编辑中</div>
+
+          <div id="emptyState" class="empty-state">
+            <div class="empty-illustration" aria-hidden="true">
+              <span class="cell cell-a"></span>
+              <span class="cell cell-b"></span>
+              <span class="cell cell-c"></span>
+              <span class="demo-circle"></span>
+              <span class="demo-arrow">➜</span>
+            </div>
+            <h2>先添加一张荧光图</h2>
+            <p>选择文件，或从 PowerPoint 复制图片后按 Ctrl/⌘+V；再点击融合位置连续标记。</p>
+            <label class="empty-upload" for="fileInput">选择图片</label>
           </div>
-          <h2>先添加一张荧光图</h2>
-          <p>选择文件，或从 PowerPoint 复制图片后按 Ctrl/⌘+V；再点击融合位置连续标记。</p>
-          <label class="empty-upload" for="fileInput">选择图片</label>
-        </div>
 
-        <div id="stage" class="stage" hidden>
-          <canvas id="imageCanvas"></canvas>
-          <svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
-        </div>
+          <div id="stage" class="stage" hidden>
+            <canvas id="imageCanvas"></canvas>
+            <svg id="overlay" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"></svg>
+          </div>
 
-        <div id="loading" class="loading" hidden role="status">
-          <span class="spinner" aria-hidden="true"></span>
-          <strong>正在读取图片…</strong>
-          <small>大型 TIFF 可能需要几秒</small>
-        </div>
+          <div id="loading" class="loading" hidden role="status">
+            <span class="spinner" aria-hidden="true"></span>
+            <strong>正在读取图片…</strong>
+            <small>大型 TIFF 可能需要几秒</small>
+          </div>
 
-        <div class="zoom-controls" aria-label="缩放控制">
-          <button id="zoomOutButton" title="缩小" aria-label="缩小">−</button>
-          <button id="fitButton" title="适应窗口 (0)" aria-label="适应窗口">适应</button>
-          <button id="zoomInButton" title="放大" aria-label="放大">＋</button>
-          <output id="zoomOutput">—</output>
-        </div>
+          <div class="zoom-controls" aria-label="缩放控制">
+            <button id="zoomOutButton" title="缩小" aria-label="缩小">−</button>
+            <button id="fitButton" title="适应窗口 (0)" aria-label="适应窗口">适应</button>
+            <button id="zoomInButton" title="放大" aria-label="放大">＋</button>
+            <output id="zoomOutput">—</output>
+          </div>
 
-        <div id="canvasHint" class="canvas-hint">箭头：单击快速放置 · 沿箭头方向拖动</div>
+          <div id="canvasHint" class="canvas-hint">箭头：单击快速放置 · 沿箭头方向拖动</div>
+        </section>
       </section>
 
       <footer class="bottom-bar">
@@ -145,6 +159,7 @@
           <span id="currentMeta">标注不会修改原图</span>
         </div>
         <div class="export-actions">
+          <button id="copyButton" class="secondary-action" title="复制当前主屏的原分辨率标注图" disabled>复制到 PPT</button>
           <button id="exportButton" class="secondary-action" disabled>下载 PNG</button>
           <button id="exportNextButton" class="primary-action" disabled>
             下载并下一张 <span aria-hidden="true">→</span>

@@ -14,7 +14,10 @@
     dropZone: $("#dropZone"),
     imageList: $("#imageList"),
     imageCount: $("#imageCount"),
+    splitViewport: $("#splitViewport"),
+    splitCountInput: $("#splitCountInput"),
     viewport: $("#viewport"),
+    primaryBadge: $("#primaryBadge"),
     stage: $("#stage"),
     canvas: $("#imageCanvas"),
     overlay: $("#overlay"),
@@ -31,6 +34,7 @@
     redo: $("#redoButton"),
     delete: $("#deleteButton"),
     clear: $("#clearButton"),
+    copy: $("#copyButton"),
     export: $("#exportButton"),
     exportNext: $("#exportNextButton"),
     zoomIn: $("#zoomInButton"),
@@ -55,6 +59,9 @@
     fitScale: 1,
     selectedId: null,
     interaction: null,
+    splitCount: 1,
+    compareIndices: [-1, -1, -1],
+    compareToken: 0,
     spacePan: false,
     toastTimer: null
   };
@@ -184,7 +191,10 @@
 
     renderImageList();
     if (state.current === -1) openItem(0);
-    else showToast(`已加入 ${additions.length} 张图片`);
+    else {
+      renderComparePanels();
+      showToast(`已加入 ${additions.length} 张图片`);
+    }
   }
 
   async function openItem(index) {
@@ -227,6 +237,7 @@
       requestAnimationFrame(fitToView);
       renderMarkers();
       updateControls();
+      renderComparePanels();
     } catch (error) {
       if (token !== state.loadToken) return;
       state.loadedId = null;
@@ -269,6 +280,147 @@
     const dimensions = { width: bitmap.width, height: bitmap.height };
     bitmap.close();
     return dimensions;
+  }
+
+  function nextCompareIndex(slot) {
+    const used = new Set([state.current, ...state.compareIndices.slice(0, slot)]);
+    for (let index = 0; index < state.items.length; index++) {
+      if (!used.has(index)) return index;
+    }
+    return -1;
+  }
+
+  function ensureCompareIndices() {
+    for (let slot = 0; slot < state.splitCount - 1; slot++) {
+      const index = state.compareIndices[slot];
+      if (index < 0 || index >= state.items.length) state.compareIndices[slot] = nextCompareIndex(slot);
+    }
+  }
+
+  function setSplitCount(value) {
+    state.splitCount = clamp(Number(value) || 1, 1, 4);
+    el.splitCountInput.value = String(state.splitCount);
+    el.splitViewport.classList.remove("split-1", "split-2", "split-3", "split-4");
+    el.splitViewport.classList.add(`split-${state.splitCount}`);
+    el.primaryBadge.hidden = state.splitCount === 1;
+    ensureCompareIndices();
+    renderComparePanels();
+    requestAnimationFrame(fitToView);
+  }
+
+  function renderComparePanels() {
+    const token = ++state.compareToken;
+    el.splitViewport.querySelectorAll(".compare-panel").forEach((panel) => panel.remove());
+    if (state.splitCount === 1) return;
+    ensureCompareIndices();
+
+    const panels = [];
+    for (let slot = 0; slot < state.splitCount - 1; slot++) {
+      const panel = document.createElement("section");
+      panel.className = "compare-panel";
+      panel.dataset.slot = slot;
+      panel.setAttribute("aria-label", `对照屏 ${slot + 2}`);
+
+      const bar = document.createElement("div");
+      bar.className = "compare-panel-bar";
+      const label = document.createElement("span");
+      label.className = "screen-label";
+      label.textContent = `屏 ${slot + 2}`;
+
+      const select = document.createElement("select");
+      select.className = "compare-select";
+      select.setAttribute("aria-label", `选择对照屏 ${slot + 2} 的图片`);
+      const placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = "选择对照图片";
+      select.append(placeholder);
+      state.items.forEach((item, index) => {
+        const option = document.createElement("option");
+        option.value = index;
+        option.textContent = `${String(index + 1).padStart(2, "0")} · ${item.name}`;
+        select.append(option);
+      });
+      const selectedIndex = state.compareIndices[slot];
+      select.value = selectedIndex >= 0 ? String(selectedIndex) : "";
+      select.addEventListener("change", () => {
+        state.compareIndices[slot] = select.value === "" ? -1 : Number(select.value);
+        renderComparePanels();
+      });
+
+      const editButton = document.createElement("button");
+      editButton.type = "button";
+      editButton.className = "edit-compare-button";
+      editButton.textContent = "编辑此图";
+      editButton.disabled = selectedIndex < 0 || selectedIndex === state.current;
+      editButton.addEventListener("click", () => editComparedImage(slot));
+      bar.append(label, select, editButton);
+
+      const wrap = document.createElement("div");
+      wrap.className = "compare-canvas-wrap";
+      const canvas = document.createElement("canvas");
+      canvas.className = "compare-canvas";
+      canvas.hidden = true;
+      const status = document.createElement("div");
+      status.className = "compare-status";
+      status.textContent = selectedIndex < 0 ? "请先添加并选择一张对照图片" : "正在读取对照图片…";
+      wrap.append(canvas, status);
+      panel.append(bar, wrap);
+      el.splitViewport.append(panel);
+      panels.push({ panel, slot });
+    }
+
+    (async () => {
+      for (const entry of panels) {
+        if (token !== state.compareToken) return;
+        await renderCompareCanvas(entry.panel, entry.slot, token);
+      }
+    })();
+  }
+
+  async function renderCompareCanvas(panel, slot, token = state.compareToken) {
+    const index = state.compareIndices[slot];
+    const canvas = panel.querySelector("canvas");
+    const status = panel.querySelector(".compare-status");
+    if (index < 0 || !state.items[index]) return;
+    const item = state.items[index];
+
+    try {
+      let source = el.canvas;
+      let dimensions = { width: item.width, height: item.height };
+      if (index !== state.current || state.loadedId !== item.id) {
+        source = document.createElement("canvas");
+        dimensions = await decodeToCanvas(item.file, source);
+      }
+      if (token !== state.compareToken || !panel.isConnected || state.compareIndices[slot] !== index) return;
+      item.width = dimensions.width;
+      item.height = dimensions.height;
+      canvas.width = item.width;
+      canvas.height = item.height;
+      const context = canvas.getContext("2d", { alpha: false });
+      context.drawImage(source, 0, 0);
+      item.markers.forEach((marker) => drawMarker(context, marker));
+      canvas.hidden = false;
+      status.hidden = true;
+    } catch (error) {
+      if (token !== state.compareToken || !panel.isConnected) return;
+      status.textContent = "无法读取这张对照图片";
+      console.error(error);
+    }
+  }
+
+  async function editComparedImage(slot) {
+    const target = state.compareIndices[slot];
+    if (target < 0 || target === state.current || !state.items[target]) return;
+    const previous = state.current;
+    state.compareIndices[slot] = previous;
+    await openItem(target);
+  }
+
+  function refreshCurrentComparisons() {
+    el.splitViewport.querySelectorAll(".compare-panel").forEach((panel) => {
+      const slot = Number(panel.dataset.slot);
+      if (state.compareIndices[slot] === state.current) renderCompareCanvas(panel, slot);
+    });
   }
 
   function renderImageList() {
@@ -656,6 +808,7 @@
     renderImageList();
     renderMarkers();
     updateControls();
+    refreshCurrentComparisons();
   }
 
   function pointerCancel(event) {
@@ -729,6 +882,7 @@
     renderImageList();
     renderMarkers();
     updateControls();
+    refreshCurrentComparisons();
   }
 
   function updateSelectedStyle(change) {
@@ -751,6 +905,7 @@
     el.redo.disabled = !item?.redo.length;
     el.delete.disabled = !(ready && state.tool === "select" && state.selectedId !== null);
     el.clear.disabled = !item?.markers.length;
+    el.copy.disabled = !ready;
     el.export.disabled = !ready;
     el.exportNext.disabled = !ready;
     if (ready) el.currentMeta.textContent = `${item.width} × ${item.height} px · ${item.markers.length} 个标记`;
@@ -796,6 +951,41 @@
     context.restore();
   }
 
+  function annotatedCanvas() {
+    const item = currentItem();
+    if (!item?.width || state.loadedId !== item.id) throw new Error("请先选择一张图片");
+    const output = document.createElement("canvas");
+    output.width = item.width;
+    output.height = item.height;
+    const context = output.getContext("2d", { alpha: false });
+    context.drawImage(el.canvas, 0, 0);
+    item.markers.forEach((marker) => drawMarker(context, marker));
+    return output;
+  }
+
+  function pngBlob() {
+    return new Promise((resolve, reject) => {
+      annotatedCanvas().toBlob((value) => value ? resolve(value) : reject(new Error("PNG 生成失败")), "image/png");
+    });
+  }
+
+  async function copyAnnotatedImage() {
+    if (!navigator.clipboard?.write || !window.ClipboardItem) {
+      showToast("当前浏览器不支持复制图片，请使用下载 PNG", true);
+      return;
+    }
+    el.copy.disabled = true;
+    try {
+      const blob = await pngBlob();
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      showToast("标注图已复制，回到 PowerPoint 按 Ctrl/⌘+V 即可粘贴");
+    } catch {
+      showToast("浏览器未允许复制图片，请重试或使用下载 PNG", true);
+    } finally {
+      updateControls();
+    }
+  }
+
   async function exportPng(advance = false) {
     const item = currentItem();
     if (!item?.width || state.loadedId !== item.id) return;
@@ -803,13 +993,7 @@
     el.exportNext.disabled = true;
 
     try {
-      const output = document.createElement("canvas");
-      output.width = item.width;
-      output.height = item.height;
-      const context = output.getContext("2d", { alpha: false });
-      context.drawImage(el.canvas, 0, 0);
-      item.markers.forEach((marker) => drawMarker(context, marker));
-      const blob = await new Promise((resolve, reject) => output.toBlob((value) => value ? resolve(value) : reject(new Error("PNG 生成失败")), "image/png"));
+      const blob = await pngBlob();
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -881,7 +1065,7 @@
     addClipboardImages(blobs);
   });
 
-  [el.dropZone, el.viewport].forEach((target) => {
+  [el.dropZone, el.splitViewport].forEach((target) => {
     target.addEventListener("dragover", (event) => { event.preventDefault(); el.dropZone.classList.add("dragging"); });
     target.addEventListener("dragleave", () => el.dropZone.classList.remove("dragging"));
     target.addEventListener("drop", (event) => {
@@ -935,11 +1119,13 @@
   el.redo.addEventListener("click", redo);
   el.delete.addEventListener("click", deleteSelected);
   el.clear.addEventListener("click", clearMarkers);
+  el.copy.addEventListener("click", copyAnnotatedImage);
   el.export.addEventListener("click", () => exportPng(false));
   el.exportNext.addEventListener("click", () => exportPng(true));
   el.zoomIn.addEventListener("click", () => zoomAt(1.2));
   el.zoomOut.addEventListener("click", () => zoomAt(1 / 1.2));
   el.fit.addEventListener("click", fitToView);
+  el.splitCountInput.addEventListener("change", () => setSplitCount(el.splitCountInput.value));
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("keyup", (event) => {
     if (event.code === "Space") {
@@ -950,5 +1136,6 @@
   window.addEventListener("resize", () => { if (state.loadedId) fitToView(); });
 
   runSelfCheck();
+  setSplitCount(1);
   updateControls();
 })();
