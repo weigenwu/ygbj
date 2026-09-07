@@ -16,6 +16,7 @@
     imageCount: $("#imageCount"),
     splitViewport: $("#splitViewport"),
     splitCountInput: $("#splitCountInput"),
+    annotationMode: $("#annotationMode"),
     viewport: $("#viewport"),
     primaryBadge: $("#primaryBadge"),
     stage: $("#stage"),
@@ -50,6 +51,7 @@
     loadedId: null,
     loadToken: 0,
     tool: "arrow",
+    pathology: false,
     color: "#ffffff",
     size: 5,
     stroke: 5,
@@ -217,7 +219,10 @@
     try {
       const decodedCanvas = document.createElement("canvas");
       const dimensions = await decodeToCanvas(item.file, decodedCanvas);
-      if (token !== state.loadToken) return;
+      if (token !== state.loadToken) {
+        decodedCanvas.width = decodedCanvas.height = 1;
+        return;
+      }
       item.width = dimensions.width;
       item.height = dimensions.height;
       state.loadedId = item.id;
@@ -225,6 +230,7 @@
       el.canvas.width = item.width;
       el.canvas.height = item.height;
       el.canvas.getContext("2d", { alpha: false }).drawImage(decodedCanvas, 0, 0);
+      decodedCanvas.width = decodedCanvas.height = 1;
 
       el.stage.style.width = `${item.width}px`;
       el.stage.style.height = `${item.height}px`;
@@ -503,12 +509,15 @@
       select: "选择：拖动标记移动 · 拖动控制点调整",
       pan: "移动：拖动画布 · 滚轮缩放"
     };
-    el.hint.textContent = hints[tool];
+    el.hint.textContent = state.pathology && tool === "circle"
+      ? "CIC 手动圈选：滚轮放大 · 从中心拖出圆圈，随后单击重复 · 按住空格拖动视野"
+      : hints[tool];
     renderMarkers();
     updateControls();
   }
 
   function defaultRadius(item) {
+    if (state.pathology) return (8 + state.size * 2) / state.scale;
     return Math.min(item.width, item.height) * (0.012 + state.size * 0.0032);
   }
 
@@ -518,6 +527,7 @@
   }
 
   function currentLineWidth(item) {
+    if (state.pathology) return 0.5 + state.stroke * 0.5;
     return Math.min(item.width, item.height) * (0.0011 + state.stroke * 0.00043);
   }
 
@@ -528,7 +538,7 @@
   function createMarker(type, point, item) {
     const common = { id: nextMarkerId(item), type, color: state.color, lineWidth: currentLineWidth(item) };
     if (type === "circle") {
-      return { ...common, cx: point.x, cy: point.y, r: item.template.circleRadius || defaultRadius(item) };
+      return { ...common, cic: state.pathology, cx: point.x, cy: point.y, r: item.template.circleRadius || defaultRadius(item) };
     }
     const offset = item.template.arrowOffset || defaultArrowOffset(item);
     let x1 = point.x + offset.x;
@@ -580,8 +590,10 @@
     for (const marker of item.markers) {
       const outline = Math.max(2, marker.lineWidth * 0.5);
       if (marker.type === "circle") {
+        if (!marker.cic) el.overlay.append(
+          svgElement("circle", { cx: marker.cx, cy: marker.cy, r: marker.r, fill: "none", stroke: "#0a0d0e", "stroke-width": marker.lineWidth + outline * 2 })
+        );
         el.overlay.append(
-          svgElement("circle", { cx: marker.cx, cy: marker.cy, r: marker.r, fill: "none", stroke: "#0a0d0e", "stroke-width": marker.lineWidth + outline * 2 }),
           svgElement("circle", { cx: marker.cx, cy: marker.cy, r: marker.r, fill: "none", stroke: marker.color, "stroke-width": marker.lineWidth })
         );
       } else {
@@ -908,7 +920,11 @@
     el.copy.disabled = !ready;
     el.export.disabled = !ready;
     el.exportNext.disabled = !ready;
-    if (ready) el.currentMeta.textContent = `${item.width} × ${item.height} px · ${item.markers.length} 个标记`;
+    if (ready) {
+      const cicCount = item.markers.filter((marker) => marker.cic === true).length;
+      el.currentMeta.textContent = `${item.width} × ${item.height} px · ${item.markers.length} 个标记`
+        + (state.pathology || cicCount ? ` · CIC 手动圈选 ${cicCount}` : "");
+    }
   }
 
   function drawMarker(context, marker) {
@@ -919,9 +935,11 @@
     if (marker.type === "circle") {
       context.beginPath();
       context.arc(marker.cx, marker.cy, marker.r, 0, Math.PI * 2);
-      context.strokeStyle = "#0a0d0e";
-      context.lineWidth = marker.lineWidth + outline * 2;
-      context.stroke();
+      if (!marker.cic) {
+        context.strokeStyle = "#0a0d0e";
+        context.lineWidth = marker.lineWidth + outline * 2;
+        context.stroke();
+      }
       context.strokeStyle = marker.color;
       context.lineWidth = marker.lineWidth;
       context.stroke();
@@ -965,7 +983,11 @@
 
   function pngBlob() {
     return new Promise((resolve, reject) => {
-      annotatedCanvas().toBlob((value) => value ? resolve(value) : reject(new Error("PNG 生成失败")), "image/png");
+      const output = annotatedCanvas();
+      output.toBlob((value) => {
+        output.width = output.height = 1;
+        value ? resolve(value) : reject(new Error("PNG 生成失败"));
+      }, "image/png");
     });
   }
 
@@ -976,8 +998,7 @@
     }
     el.copy.disabled = true;
     try {
-      const blob = await pngBlob();
-      await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+      await navigator.clipboard.write([new ClipboardItem({ "image/png": pngBlob() })]);
       showToast("标注图已复制，回到 PowerPoint 按 Ctrl/⌘+V 即可粘贴");
     } catch {
       showToast("浏览器未允许复制图片，请重试或使用下载 PNG", true);
@@ -997,7 +1018,7 @@
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `${baseName(item.name)}_融合标注.png`;
+      link.download = `${baseName(item.name)}_${item.markers.some((marker) => marker.cic) || state.pathology ? "CIC标注" : "融合标注"}.png`;
       link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1500);
       showToast(`已下载 ${link.download}`);
@@ -1055,6 +1076,14 @@
   });
 
   el.pasteButton.addEventListener("click", pasteFromClipboard);
+  el.annotationMode.addEventListener("change", () => {
+    state.pathology = el.annotationMode.value === "cic";
+    state.color = state.pathology ? "#d00000" : "#ffffff";
+    state.items.forEach((item) => { item.template.circleRadius = null; });
+    $$(".swatch").forEach((button) => button.classList.toggle("active", button.dataset.color === state.color));
+    setTool(state.pathology ? "circle" : "arrow");
+    showToast(state.pathology ? "病理 CIC：请放大后手动圈选，拖动一次可记住圆圈大小" : "已切换到荧光标注");
+  });
   window.addEventListener("paste", (event) => {
     const blobs = [...(event.clipboardData?.items || [])]
       .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
@@ -1125,6 +1154,7 @@
   el.zoomIn.addEventListener("click", () => zoomAt(1.2));
   el.zoomOut.addEventListener("click", () => zoomAt(1 / 1.2));
   el.fit.addEventListener("click", fitToView);
+  $("#actualSizeButton").addEventListener("click", () => zoomAt(1 / state.scale));
   el.splitCountInput.addEventListener("change", () => setSplitCount(el.splitCountInput.value));
   window.addEventListener("keydown", handleKeyDown);
   window.addEventListener("keyup", (event) => {

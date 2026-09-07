@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="在浏览器中为荧光显微图快速添加箭头和圆圈标记，图片仅在本机处理。">
-  <title>FusionMark · 荧光图快速标注</title>
+  <title>FusionMark · 荧光与病理图标注</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="styles.css">
   <script src="vendor/pako.min.js" defer></script>
@@ -15,7 +15,7 @@
   <header class="topbar">
     <div class="brand" aria-label="FusionMark 荧光图快速标注">
       <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
-      <span><strong>FusionMark</strong><small>荧光图快速标注</small></span>
+      <span><strong>FusionMark</strong><small>荧光与病理图标注</small></span>
     </div>
     <div class="privacy-badge" title="所有图片只在当前浏览器中读取和处理">
       <span aria-hidden="true">●</span> 本地处理 · 图片不上传
@@ -27,7 +27,7 @@
       <div class="sidebar-heading">
         <div>
           <p class="eyebrow">工作队列</p>
-          <h1>荧光图片</h1>
+          <h1>待标注图片</h1>
         </div>
         <span id="imageCount" class="count-badge">0</span>
       </div>
@@ -57,6 +57,13 @@
 
     <main class="editor">
       <div class="toolbar" aria-label="标注工具栏">
+        <label class="split-field">
+          <span>标注模式</span>
+          <select id="annotationMode" aria-label="标注模式">
+            <option value="fluorescence">荧光标注</option>
+            <option value="cic">病理 CIC</option>
+          </select>
+        </label>
         <div class="tool-group" aria-label="工具">
           <button class="tool-button" data-tool="select" title="选择与编辑 (V)" aria-label="选择与编辑">
             <span aria-hidden="true">↖</span><small>选择</small>
@@ -80,6 +87,7 @@
             <button class="swatch active" data-color="#ffffff" style="--swatch:#ffffff" aria-label="白色" title="白色"></button>
             <button class="swatch" data-color="#ffd84d" style="--swatch:#ffd84d" aria-label="黄色" title="黄色"></button>
             <button class="swatch" data-color="#ff5c70" style="--swatch:#ff5c70" aria-label="红色" title="红色"></button>
+            <button class="swatch" data-color="#d00000" style="--swatch:#d00000" aria-label="病理红" title="病理红"></button>
             <button class="swatch" data-color="#55e6ff" style="--swatch:#55e6ff" aria-label="青色" title="青色"></button>
             <button class="swatch" data-color="#74f28b" style="--swatch:#74f28b" aria-label="绿色" title="绿色"></button>
           </div>
@@ -126,7 +134,7 @@
               <span class="demo-circle"></span>
               <span class="demo-arrow">➜</span>
             </div>
-            <h2>先添加一张荧光图</h2>
+            <h2>先添加一张荧光图或病理图</h2>
             <p>选择文件，或从 PowerPoint 复制图片后按 Ctrl/⌘+V；再点击融合位置连续标记。</p>
             <label class="empty-upload" for="fileInput">选择图片</label>
           </div>
@@ -146,6 +154,7 @@
             <button id="zoomOutButton" title="缩小" aria-label="缩小">−</button>
             <button id="fitButton" title="适应窗口 (0)" aria-label="适应窗口">适应</button>
             <button id="zoomInButton" title="放大" aria-label="放大">＋</button>
+            <button id="actualSizeButton" title="按原图像素查看" aria-label="原图大小">100%</button>
             <output id="zoomOutput">—</output>
           </div>
 

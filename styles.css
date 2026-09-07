@@ -255,6 +255,7 @@ button { color: inherit; }
 }
 
 .toolbar {
+  flex-wrap: wrap;
   min-height: 76px;
   display: flex;
   align-items: center;
